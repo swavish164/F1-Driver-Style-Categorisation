@@ -105,7 +105,6 @@ def calculateCornerData(currentLapData):
     cornerIndex = currentLapData.index[currentLapData['Corner'] == True].tolist(
     )
     apexIndex = currentLapData.index[currentLapData['Apex'] == True].tolist()
-    # print(cornerIndex, apexIndex)
     distanceToCornerBraking = []
     speedCornerDiff = []
     throttleAtApex = []
@@ -140,7 +139,11 @@ def calculateCornerData(currentLapData):
 def calculatingData(currentLapData):
     totalData = currentLapData.shape[0]
     throttle = currentLapData['Throttle']
+    throttleGradient = np.gradient(throttle)
+    throttleChange = throttleGradient[throttleGradient != 0]
+    throttleOscillation = np.absolute(throttleChange).mean()
     gears = currentLapData['nGear']
+    gearGradient = np.gradient(gears)
     diffs = gears.diff()
     upshifts = (diffs > 0).sum()
     downshifts = (diffs < 0).sum()
@@ -150,10 +153,15 @@ def calculatingData(currentLapData):
     throttleSD = throttle.std()
     throttleMean = throttle.mean()
     throttleVC = throttle.value_counts()
-    braking = currentLapData['Brake'].value_counts()
+    braking = currentLapData['Brake'].astype(int)
+    coasting = (throttle < 5) & (braking == 0)
+    coastingCount = coasting.sum()
+    coastingPerc = (coastingCount / totalData) * 100
+    brakeChanges = (braking.diff()).abs().sum()
+    brakingCount = braking.value_counts()
     totalThrottle = throttleVC.get(100, 0)
     totalThrottle0 = throttleVC.get(0, 0)
-    totalBraking = braking.get(True)
+    totalBraking = brakingCount.get(1)
     throttlePerc = (totalThrottle / totalData) * 100
     throttle0Perc = (totalThrottle0 / totalData) * 100
     brakingPerc = (totalBraking/totalData)*100
@@ -161,18 +169,20 @@ def calculatingData(currentLapData):
         currentLapData)
 
     result = {
-        "upshifts": upshifts,
-        "downshifts": downshifts,
-        "gearMean": gearMean,
+        # "upshifts": upshifts,
+        # "downshifts": downshifts,
+        # "gearMean": gearMean,
         # "gearPerc": gearPerc,
-        "throttleMean": throttleMean,
+        # "throttleMean": throttleMean,
         "throttleStd": throttleSD,
         "throttlePerc100": throttlePerc,
         "throttlePerc0": throttle0Perc,
-        "braking_pct": brakingPerc,
         "avCornerBrakeDistance": avCornerDistance,
         "avCornerSpeedDiff": avSpeedCornerDiff,
         "avApexThrottle": avApexThrottle,
+        "throttleOscillation": throttleOscillation,
+        "brakeChanges": brakeChanges,
+        "coastingPerc": coastingPerc,
     }
     return result
 
@@ -192,12 +202,10 @@ for driver, laps in driversLaps:
         lapTelemetry = lapTelemetry.reset_index(drop=True)
         lapTelemetry = identifyCorner(lapTelemetry)
         data = calculatingData(lapTelemetry)
-        minDistanceToDriverAhead = lapTelemetry["DistanceToDriverAhead"].min()
-        driversAhead = set(lapTelemetry["DriverAhead"].dropna().unique())
-        attacking = minDistanceToDriverAhead < 1
-        defendingDriver = lapTelemetry["DriverAhead"] if attacking else 0
-
-        lapMatrix.loc[lapNumber, (driver, "attacking")] = attacking
+        defendingDrivers = set((lapTelemetry[lapTelemetry['DistanceToDriverAhead'] < 1])[
+                               "DriverAhead"].dropna().unique())
+        if len(defendingDrivers) != 0:
+            lapMatrix.loc[lapNumber, (driver, "attacking")] = True
         # lapMatrix.loc[lapNumber, (driver, "defending")] = False
         # lapMatrix.loc[lapNumber, (driver, "Drivers Ahead")] = driversAhead
         lapMatrix.at[lapNumber, (driver, "Lap Data")] = data
@@ -218,4 +226,4 @@ for lapNumber in lapMatrix.index:
                 break
         # lapMatrix.loc[lapNumber, (defender, "defending")] = defending
 '''
-lapMatrix.to_pickle("2025Silverstone.pkl")
+lapMatrix.to_pickle("2025Silverstone2.pkl")

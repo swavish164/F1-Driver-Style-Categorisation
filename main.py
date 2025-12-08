@@ -9,7 +9,7 @@ import matplotlib
 plt.ioff()
 scaler = StandardScaler()
 
-lapMatrix = pd.read_pickle("2025Silverstone.pkl")
+lapMatrix = pd.read_pickle("2025Silverstone2.pkl")
 lapMatrix = lapMatrix.dropna(subset=[('VER', 'Lap Data')])
 # print(lapMatrix.columns)
 drivers = lapMatrix.columns.get_level_values(0).unique()
@@ -19,20 +19,17 @@ palette = sns.color_palette("hls", len(drivers))
 driverColours = {driver: palette[i] for i, driver in enumerate(drivers)}
 
 columns = [
-    "upshifts",
-    "downshifts",
-    "gearMean",
-    "throttleMean",
     "throttleStd",
     "throttlePerc100",
     "throttlePerc0",
-    "braking_pct",
     "avCornerBrakeDistance",
     "avCornerSpeedDiff",
-    "avApexThrottle",]
+    "avApexThrottle",
+    "throttleOscillation",
+    "brakeChanges",
+    "coastingPerc",]
 
 data = {col: [] for col in columns}
-
 
 for driver in drivers:
     driverData = lapMatrix[(driver, 'Lap Data')]
@@ -51,6 +48,7 @@ df = pd.DataFrame({
     **{col: [row["value"] for row in data[col]] for col in columns}
 })
 
+
 sns.pairplot(
     df,
     vars=columns,
@@ -62,9 +60,13 @@ plt.show()
 
 allLapsDF = pd.DataFrame(allLaps, columns=columns)
 scaled = scaler.fit_transform(allLapsDF)
-
-pca = PCA(n_components=2)
+pca = PCA(n_components=0.95)
 Xpca = pca.fit_transform(scaled)
-hdb = HDBSCAN(min_cluster_size=20, max_cluster_size=50)
-hdb.fit(Xpca)
+hdb = HDBSCAN(min_cluster_size=6, min_samples=2,
+              cluster_selection_method='leaf', metric='euclidean')
+hdb.fit_predict(Xpca)
 labels = hdb.labels_
+df["cluster"] = labels
+print(pd.crosstab(df.driver, df.cluster))
+cluster_summary = df.groupby("cluster")[columns].mean()
+print(cluster_summary)

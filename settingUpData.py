@@ -4,13 +4,17 @@ import pandas as pd
 import fastf1
 import numpy as np
 import math
-from calculateCornerFunctions import calculateCornerData
+import sqlite3
+from calculateCornerFunctions import *
+database = sqlite3.connect("Databases\database.db")
+cursor = database.cursor()
 
 fastf1.set_log_level("ERROR")
 
 session = loadSession.session
 
 laps = session.laps
+driversData = session._drivers_from_f1_api()
 sessionStatus = session.track_status
 
 fullLaps = laps[
@@ -52,7 +56,7 @@ lapMatrix = pd.DataFrame(index=lapNumbers, columns=columns)
 lapMatrix = lapMatrix.astype(object)
 
 
-def calculatingData(currentLapData):
+def calculatingData(currentLapData, lapId):
     totalData = currentLapData.shape[0]
     throttle = currentLapData['Throttle']
     throttleGradient = np.gradient(throttle)
@@ -84,6 +88,9 @@ def calculatingData(currentLapData):
     avCornerDistance, avSpeedCornerDiff, avApexThrottle = calculateCornerData(
         currentLapData)
 
+    cursor.execute("""INSERT INTO FEATURES (lapId, throttlePerc100, throttlePerc0, avCornerBrakeDistance, throttleOscillation,coastingPerc)
+                   VALUES (?, ?, ?, ?, ?, ?)""", (lapId, throttlePerc, throttle0Perc, avCornerDistance, throttleOscillation, coastingPerc))
+
     result = {
         # "upshifts": upshifts,
         # "downshifts": downshifts,
@@ -103,59 +110,81 @@ def calculatingData(currentLapData):
     return result
 
 
-for driver, laps in driversLaps:
-    laps = laps.drop(['SpeedI1', 'SpeedI2', 'SpeedFL', 'SpeedST',
-                      'Sector1SessionTime', 'Sector2SessionTime', 'Sector3SessionTime'],
-                     axis=1, errors='ignore')
-    for i in range(laps.shape[0]):
-        lapRow = laps.iloc[i]
-        lapNumber = lapRow["LapNumber"]
-        lapTelemetry = lapRow.get_telemetry()
-        lapTelemetry = lapTelemetry.drop(
-            ['Status', 'Z'], axis=1, errors='ignore')
-        lapTelemetry['X'] = lapTelemetry['X'] / 10
-        lapTelemetry['Y'] = lapTelemetry['Y'] / 10
-        lapTelemetry = lapTelemetry.reset_index(drop=True)
-        lapTelemetry = identifyCorner(lapTelemetry)
-        data = calculatingData(lapTelemetry)
-        defendingDrivers = set((lapTelemetry[lapTelemetry['DistanceToDriverAhead'] < 1])[
-                               "DriverAhead"].dropna().unique())
-        defendingDrivers = [item for item in defendingDrivers]
-        if len(defendingDrivers) != 0:
-            lapMatrix.loc[lapNumber, (driver, "attacking")] = True
-        lapMatrix.loc[lapNumber, (driver, "defending")] = False
-        lapMatrix.loc[lapNumber, (driver, "Drivers Ahead")] = defendingDrivers
-        lapMatrix.at[lapNumber, (driver, "Lap Data")] = data
+def calculatingDriverLaps(year, track):
+    cursor.execute("""INSERT INTO Race (year, circuit)
+                   VALUES (?, ?)""", (year, track))
+    raceId = cursor.lastrowid
+    database.commit()
+    for driver, laps in driversLaps:
+        currentDriverData = driversData[driversData['Abbreviation'] == driver]
+        cursor.execute("""INSERT OR IGNORE INTO Driver (code,name,team)
+                     VALUES (?, ?, ?)""", (driver, str(currentDriverData['FullName'].iloc[0]),
+                                           str(currentDriverData['TeamName'].iloc[0])))
+        driverId = cursor.lastrowid
+        database.commit()
+        laps = laps.drop(['SpeedI1', 'SpeedI2', 'SpeedFL', 'SpeedST',
+                         'Sector1SessionTime', 'Sector2SessionTime', 'Sector3SessionTime'],
+                         axis=1, errors='ignore')
+        for i in range(laps.shape[0]):
+            lapRow = laps.iloc[i]
+            lapNumber = lapRow["LapNumber"]
+            cursor.execute(
+                """INSERT INTO LAP (raceId, driverId,lapNumber,attacking,defending,clean)
+                VALUES (?, ?, ?, ?, ?, ?)""", (raceId, driverId, lapNumber, False, False, False))
+            lapId = cursor.lastrowid
+            database.commit()
+            lapTelemetry = lapRow.get_telemetry()
+            lapTelemetry = lapTelemetry.drop(
+                ['Status', 'Z'], axis=1, errors='ignore')
+            lapTelemetry['X'] = lapTelemetry['X'] / 10
+            lapTelemetry['Y'] = lapTelemetry['Y'] / 10
+            lapTelemetry = lapTelemetry.reset_index(drop=True)
+            lapTelemetry = identifyCorner(lapTelemetry)
+            data = calculatingData(lapTelemetry, lapId)
+            defendingDrivers = set((lapTelemetry[lapTelemetry['DistanceToDriverAhead'] < 1])[
+                "DriverAhead"].dropna().unique())
+            defendingDrivers = [item for item in defendingDrivers]
+            if len(defendingDrivers) != 0:
+                lapMatrix.loc[lapNumber, (driver, "attacking")] = True
+                lapMatrix.loc[lapNumber, (driver, "defending")] = False
+                lapMatrix.loc[lapNumber,
+                              (driver, "Drivers Ahead")] = defendingDrivers
+                lapMatrix.at[lapNumber, (driver, "Lap Data")] = data
+
+    for lapNumber in lapMatrix.index:
+        for defender in drivers:
+            defending = False
+            for attacker in drivers:
+                lapData = lapMatrix.loc[lapNumber,
+                                        (attacker, "Lap Data")]
+                if lapData is None:
+                    continue
+                data = lapMatrix.loc[lapNumber,
+                                     (attacker, "Drivers Ahead")]
+                driverNumber = session.get_driver(
+                    defender)['DriverNumber']
+
+                if data is None or (isinstance(data, float) and math.isnan(data)):
+                    driversAhead = []
+                elif isinstance(data, list):
+                    driversAhead = data
+                elif isinstance(data, (np.ndarray, pd.Series)):
+                    driversAhead = list(data)
+
+                if driverNumber in driversAhead:
+                    defending = True
+                    break
+            lapMatrix.loc[lapNumber,
+                          (defender, "defending")] = defending
+
+            # attackingLaps = lapMatrix.xs("attacking", level=1, axis=1).any(axis=1)
+            # defendingLaps = lapMatrix.xs("defending", level=1, axis=1).any(axis=1)
+            # clearLaps = lapMatrix[~attackingLaps & ~defendingLaps]
+            # attackingLaps = lapMatrix[attackingLaps]
+            # defendingLaps = lapMatrix[defendingLaps]
+            # clearLaps.to_pickle("2025Silverstone2.pkl")
+            # attackingLaps.to_pickle("attackingLaps2025Silverstone.pkl")
+            # defendingLaps.to_pickle("defendingLaps2025Silverstone.pkl")
 
 
-for lapNumber in lapMatrix.index:
-    for defender in drivers:
-        defending = False
-        for attacker in drivers:
-            lapData = lapMatrix.loc[lapNumber, (attacker, "Lap Data")]
-            if lapData is None:
-                continue
-            data = lapMatrix.loc[lapNumber,
-                                 (attacker, "Drivers Ahead")]
-            driverNumber = session.get_driver(defender)['DriverNumber']
-
-            if data is None or (isinstance(data, float) and math.isnan(data)):
-                driversAhead = []
-            elif isinstance(data, list):
-                driversAhead = data
-            elif isinstance(data, (np.ndarray, pd.Series)):
-                driversAhead = list(data)
-
-            if driverNumber in driversAhead:
-                defending = True
-                break
-        lapMatrix.loc[lapNumber, (defender, "defending")] = defending
-
-attackingLaps = lapMatrix.xs("attacking", level=1, axis=1).any(axis=1)
-defendingLaps = lapMatrix.xs("defending", level=1, axis=1).any(axis=1)
-clearLaps = lapMatrix[~attackingLaps & ~defendingLaps]
-attackingLaps = lapMatrix[attackingLaps]
-defendingLaps = lapMatrix[defendingLaps]
-# clearLaps.to_pickle("2025Silverstone2.pkl")
-attackingLaps.to_pickle("attackingLaps2025Silverstone.pkl")
-defendingLaps.to_pickle("defendingLaps2025Silverstone.pkl")
+calculatingDriverLaps(2025, 'Silverstone')

@@ -237,4 +237,8 @@ for lapNumber in lapMatrix.index:
 attackingLaps = lapMatrix.xs("attacking", level=1, axis=1).any(axis=1)
 defendingLaps = lapMatrix.xs("defending", level=1, axis=1).any(axis=1)
 clearLaps = lapMatrix[~attackingLaps & ~defendingLaps]
-clearLaps.to_pickle("2025Silverstone2.pkl")
+attackingLaps = lapMatrix[attackingLaps]
+defendingLaps = lapMatrix[defendingLaps]
+# clearLaps.to_pickle("2025Silverstone2.pkl")
+attackingLaps.to_pickle("attackingLaps2025Silverstone.pkl")
+defendingLaps.to_pickle("defendingLaps2025Silverstone.pkl")
